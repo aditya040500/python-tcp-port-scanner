@@ -113,10 +113,22 @@ Use this scanner only on your own computer or on systems you are explicitly auth
 - **Current Windows testing limitation:** After stopping a temporary HTTP server on localhost port 8000, the scan still returned `INCONCLUSIVE`. The Windows diagnostic reported `connect_ex` result `10035`, which means the nonblocking connection was still in progress. In this execution environment, `select` did not report the connection as ready before the timeout and `SO_ERROR` was `0`, so a live refused-connection (`CLOSED`) result could not be verified. The scanner leaves that outcome `INCONCLUSIVE` rather than guessing that it is closed.
 - The scanner checks ports sequentially, so scanning a large range can take time.
 
+## Tests
+
+Run the standard-library test suite from the project folder:
+
+```powershell
+py -m unittest discover -s tests -v
+```
+
+The tests use mocked socket outcomes, so they do not scan external systems.
+
 ## Project structure
 
 ```text
 port scanner 2/
 ├── port_scanner.py
-└── README.md
+├── README.md
+└── tests/
+    └── test_port_scanner.py
 ```
