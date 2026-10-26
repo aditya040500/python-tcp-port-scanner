@@ -1,5 +1,8 @@
+import contextlib
 import errno
+import io
 import socket
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -84,6 +87,91 @@ class ScanPortTests(unittest.TestCase):
         self.assertEqual(result, "INCONCLUSIVE")
         self.assertEqual(select_calls, 1)
 
+    def test_reuses_pre_resolved_addresses_and_applies_scanned_port(self):
+        fake_connection = FakeSocket(0, 0)
+        resolved_addresses = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("192.0.2.10", 0),
+            )
+        ]
+
+        with (
+            patch.object(port_scanner.socket, "getaddrinfo") as resolve,
+            patch.object(
+                port_scanner.socket, "socket", return_value=fake_connection
+            ),
+        ):
+            result = port_scanner.scan_port(
+                "example.test", 8080, 1.0, resolved_addresses
+            )
+
+        self.assertEqual(result, "OPEN")
+        resolve.assert_not_called()
+        self.assertEqual(fake_connection.address, ("192.0.2.10", 8080))
+
+
+class MainTests(unittest.TestCase):
+    def test_hostname_resolution_error_is_reported_to_user(self):
+        output = io.StringIO()
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["port_scanner.py", "bad.invalid", "--ports", "80"],
+            ),
+            patch.object(
+                port_scanner.socket,
+                "getaddrinfo",
+                side_effect=socket.gaierror("name not known"),
+            ),
+            contextlib.redirect_stderr(output),
+        ):
+            with self.assertRaises(SystemExit) as error:
+                port_scanner.main()
+
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn(
+            "Could not resolve target 'bad.invalid'", output.getvalue()
+        )
+
+    def test_resolves_target_once_and_reuses_results_for_each_port(self):
+        resolved_addresses = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", 0),
+            )
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["port_scanner.py", "example.test", "--ports", "80,443"],
+            ),
+            patch.object(
+                port_scanner.socket,
+                "getaddrinfo",
+                return_value=resolved_addresses,
+            ) as resolve,
+            patch.object(port_scanner, "scan_port", return_value="CLOSED") as scan,
+            contextlib.redirect_stdout(output),
+        ):
+            port_scanner.main()
+
+        resolve.assert_called_once_with(
+            "example.test", 0, type=socket.SOCK_STREAM
+        )
+        self.assertEqual(scan.call_count, 2)
+        for call in scan.call_args_list:
+            self.assertIs(call.args[3], resolved_addresses)
+
 
 class FakeSocket:
     def __init__(self, connect_result, socket_error):
@@ -100,6 +188,7 @@ class FakeSocket:
         self.blocking = blocking
 
     def connect_ex(self, address):
+        self.address = address
         return self.connect_result
 
     def getsockopt(self, level, option):

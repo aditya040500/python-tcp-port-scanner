@@ -60,14 +60,28 @@ def positive_timeout(timeout_text):
     return timeout
 
 
-def scan_port(target, port, timeout):
+def scan_port(target, port, timeout, resolved_addresses=None):
     """Return OPEN, CLOSED, or INCONCLUSIVE for one TCP port."""
-    try:
-        addresses = socket.getaddrinfo(
-            target, port, type=socket.SOCK_STREAM
-        )
-    except OSError:
-        return "INCONCLUSIVE"
+    if resolved_addresses is None:
+        try:
+            addresses = socket.getaddrinfo(
+                target, port, type=socket.SOCK_STREAM
+            )
+        except OSError:
+            return "INCONCLUSIVE"
+    else:
+        # Reuse the scan's DNS answers while applying the port being scanned.
+        addresses = [
+            (
+                family,
+                socket_type,
+                protocol,
+                canonical_name,
+                (address[0], port, *address[2:]),
+            )
+            for family, socket_type, protocol, canonical_name, address
+            in resolved_addresses
+        ]
 
     deadline = time.monotonic() + timeout
     inconclusive_result = False
@@ -148,13 +162,17 @@ def main():
     args = parser.parse_args()
 
     try:
-        socket.getaddrinfo(args.target, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as error:
+        resolved_addresses = socket.getaddrinfo(
+            args.target, 0, type=socket.SOCK_STREAM
+        )
+    except OSError as error:
         parser.error(f"Could not resolve target '{args.target}': {error}")
 
     results = []
     for port in args.ports:
-        status = scan_port(args.target, port, args.timeout)
+        status = scan_port(
+            args.target, port, args.timeout, resolved_addresses
+        )
         results.append((port, status))
 
     print("====================================")

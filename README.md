@@ -7,7 +7,8 @@ A small command-line tool that checks selected TCP ports on a hostname or IP add
 - Scan one TCP port, a comma-separated list, or one or more port ranges.
 - Set a connection timeout in seconds.
 - Show each port's result and the total number of open ports.
-- Validate port numbers and timeout values.
+- Validate port numbers and timeout values, and report hostname-resolution errors clearly.
+- Resolve a target hostname once per scan and reuse those addresses for each selected port.
 - Uses Python's built-in libraries; no extra packages are required.
 
 ## Technologies
@@ -100,7 +101,7 @@ Scan completed.
 
 ## How it works
 
-The program resolves the target, then loops through the selected ports. For each port, it attempts a TCP connection with the configured timeout. It uses the connection result to report `OPEN`, `CLOSED`, or `INCONCLUSIVE`, then prints a summary.
+The program resolves the target once, then loops through the selected ports using those same resolved addresses. For each port, it attempts a TCP connection with the configured timeout. It uses the connection result to report `OPEN`, `CLOSED`, or `INCONCLUSIVE`, then prints a summary. If the hostname cannot be resolved, the program stops with a helpful error instead of starting the scan.
 
 ## Authorized use and safety
 
