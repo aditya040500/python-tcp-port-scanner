@@ -73,6 +73,8 @@ If not specified, the timeout is 1 second per selected port.
 - **CLOSED** — The connection was refused at every resolved address for that port. A refusal means the TCP connection was actively rejected; it does not identify why it was rejected.
 - **INCONCLUSIVE** — The scanner could not determine the port state because of a timeout or another network error. **INCONCLUSIVE does not mean CLOSED.**
 
+For an `INCONCLUSIVE` result, the scanner prints a short `Reason` line, such as `connection timed out` or `socket error: network is unreachable`. This message describes why the scan could not classify the port; it does not change the result into `CLOSED`.
+
 A timeout alone does not prove that a port is filtered or closed. Network conditions, firewall behavior, or an unreachable target can prevent a reliable result.
 
 ## Hypothetical sample output

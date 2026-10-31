@@ -17,7 +17,17 @@ class ParsePortsTests(unittest.TestCase):
         )
 
     def test_rejects_invalid_ports_and_ranges(self):
-        invalid_values = ["", "80,,443", "abc", "80-", "20-10", "0", "65536"]
+        invalid_values = [
+            "",
+            "80,,443",
+            "abc",
+            "80-",
+            "20-10",
+            "0",
+            "65536",
+            "²",
+            "9" * 5000,
+        ]
         for value in invalid_values:
             with self.subTest(value=value):
                 with self.assertRaises(port_scanner.argparse.ArgumentTypeError):
@@ -37,7 +47,9 @@ class PositiveTimeoutTests(unittest.TestCase):
 
 
 class ScanPortTests(unittest.TestCase):
-    def scan_with_mocked_socket(self, connect_result, socket_error=0, ready=False):
+    def scan_with_mocked_socket(
+        self, connect_result, socket_error=0, ready=False, include_diagnostic=False
+    ):
         fake_connection = FakeSocket(connect_result, socket_error)
         address_info = [
             (
@@ -55,7 +67,12 @@ class ScanPortTests(unittest.TestCase):
             patch.object(port_scanner.socket, "socket", return_value=fake_connection),
             patch.object(port_scanner.select, "select", return_value=select_result) as wait,
         ):
-            result = port_scanner.scan_port("127.0.0.1", 8080, 1.0)
+            scanner = (
+                port_scanner._scan_port_with_diagnostic
+                if include_diagnostic
+                else port_scanner.scan_port
+            )
+            result = scanner("127.0.0.1", 8080, 1.0)
 
         return result, wait.call_count
 
@@ -81,11 +98,70 @@ class ScanPortTests(unittest.TestCase):
 
     def test_pending_connection_timeout_is_inconclusive(self):
         result, select_calls = self.scan_with_mocked_socket(
-            errno.EWOULDBLOCK, socket_error=0, ready=False
+            errno.EWOULDBLOCK,
+            socket_error=0,
+            ready=False,
+            include_diagnostic=True,
         )
 
-        self.assertEqual(result, "INCONCLUSIVE")
+        self.assertEqual(result, ("INCONCLUSIVE", "connection timed out"))
         self.assertEqual(select_calls, 1)
+
+    def test_socket_error_is_inconclusive_with_diagnostic(self):
+        fake_connection = FakeSocket(10051, 0)
+        address_info = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", 8080),
+            )
+        ]
+
+        with (
+            patch.object(
+                port_scanner.socket, "getaddrinfo", return_value=address_info
+            ),
+            patch.object(
+                port_scanner.socket, "socket", return_value=fake_connection
+            ),
+        ):
+            result = port_scanner._scan_port_with_diagnostic(
+                "127.0.0.1", 8080, 1.0
+            )
+
+        self.assertEqual(result, ("INCONCLUSIVE", "network is unreachable"))
+
+    def test_os_socket_exception_is_inconclusive_with_diagnostic(self):
+        address_info = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", 8080),
+            )
+        ]
+
+        with (
+            patch.object(
+                port_scanner.socket, "getaddrinfo", return_value=address_info
+            ),
+            patch.object(
+                port_scanner.socket,
+                "socket",
+                side_effect=OSError("network is unreachable"),
+            ),
+        ):
+            result = port_scanner._scan_port_with_diagnostic(
+                "127.0.0.1", 8080, 1.0
+            )
+
+        self.assertEqual(
+            result,
+            ("INCONCLUSIVE", "socket error: network is unreachable"),
+        )
 
     def test_reuses_pre_resolved_addresses_and_applies_scanned_port(self):
         fake_connection = FakeSocket(0, 0)
@@ -115,6 +191,18 @@ class ScanPortTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
+    def test_malformed_port_argument_exits_with_helpful_error(self):
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["port_scanner.py", "--ports", "²"]),
+            contextlib.redirect_stderr(output),
+        ):
+            with self.assertRaises(SystemExit) as error:
+                port_scanner.main()
+
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("Port numbers must contain ASCII digits only", output.getvalue())
+
     def test_hostname_resolution_error_is_reported_to_user(self):
         output = io.StringIO()
         with (
@@ -160,7 +248,11 @@ class MainTests(unittest.TestCase):
                 "getaddrinfo",
                 return_value=resolved_addresses,
             ) as resolve,
-            patch.object(port_scanner, "scan_port", return_value="CLOSED") as scan,
+            patch.object(
+                port_scanner,
+                "_scan_port_with_diagnostic",
+                return_value=("CLOSED", None),
+            ) as scan,
             contextlib.redirect_stdout(output),
         ):
             port_scanner.main()
@@ -171,6 +263,36 @@ class MainTests(unittest.TestCase):
         self.assertEqual(scan.call_count, 2)
         for call in scan.call_args_list:
             self.assertIs(call.args[3], resolved_addresses)
+
+    def test_prints_diagnostic_for_inconclusive_result(self):
+        resolved_addresses = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", 0),
+            )
+        ]
+        output = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["port_scanner.py", "--ports", "80"]),
+            patch.object(
+                port_scanner.socket,
+                "getaddrinfo",
+                return_value=resolved_addresses,
+            ),
+            patch.object(
+                port_scanner,
+                "_scan_port_with_diagnostic",
+                return_value=("INCONCLUSIVE", "connection timed out"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            port_scanner.main()
+
+        self.assertIn("80       INCONCLUSIVE", output.getvalue())
+        self.assertIn("Reason: connection timed out", output.getvalue())
 
 
 class FakeSocket:
